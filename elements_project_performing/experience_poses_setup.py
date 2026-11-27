@@ -227,6 +227,23 @@ def fetch(key):
     return f"op('pose_logic').fetch('{key}', 0)"
 
 
+def wire(dst, sources):
+    """Connect several operators, in order, to a multi-input operator."""
+    missing = [i for i, s in enumerate(sources) if s is None]
+    if missing:
+        print('!!', dst.name, 'not wired, missing source(s) at input', missing)
+        return
+    for c in reversed(list(dst.inputConnectors)):
+        c.disconnect()
+    for i, s in enumerate(sources):
+        if i < len(dst.inputConnectors):
+            dst.inputConnectors[i].connect(s)
+        else:
+            s.outputConnectors[0].connect(dst)
+    if len(dst.inputs) != len(sources):
+        print('!!', dst.name, 'has', len(dst.inputs), 'of', len(sources), 'inputs - wire by hand:', [s.name for s in sources])
+
+
 X0, Y0 = 1600, -400   # where the new nodes are placed (scroll right of your network)
 
 # 1. logic (and retire the movement-quality experience_logic from experience_setup.py if present)
@@ -241,18 +258,17 @@ tryset(logic, ['frameend'], True)       # if this prints '!!': tick "Frame End" 
 # 2. reveal shader
 glsl_dat = make(textDAT, 'reveal_glsl', X0, Y0 + 150)
 glsl_dat.text = GLSL
-reveal = make(glslTOP, 'reveal', X0 + 200, Y0 + 150)
+old_reveal = net.op('reveal')
+if old_reveal is not None and old_reveal.OPType != 'glslmultiTOP':
+    old_reveal.destroy()                # a plain GLSL TOP only accepts 3 inputs, we need 5
+reveal = make(glslmultiTOP, 'reveal', X0 + 200, Y0 + 150)
 tryset(reveal, ['pixeldat'], glsl_dat.path)
 tryset(reveal, ['vec0name'], 'uProg')
 for comp, key in zip('xyzw', ['p_water', 'p_earth', 'p_air', 'p_fire']):
     tryset(reveal, ['vec0value' + comp], fetch(key), expr=True)
 tryset(reveal, ['vec1name'], 'uFull')
 tryset(reveal, ['vec1valuex'], fetch('full'), expr=True)
-for i, src in enumerate([BASE] + [VIDEOS[e] for e in ('water', 'earth', 'air', 'fire')]):
-    if net.op(src) is None:
-        print('!! missing', src, '- connect input', i, 'of reveal by hand')
-    else:
-        reveal.inputConnectors[i].connect(net.op(src))
+wire(reveal, [net.op(n) for n in [BASE] + [VIDEOS[e] for e in ('water', 'earth', 'air', 'fire')]])
 
 # 3. text + final composite
 text = make(textTOP, 'pose_text', X0 + 200, Y0)
@@ -264,13 +280,7 @@ tryset(text, ['fontcolorg'], 1)
 tryset(text, ['fontcolorb'], 1)
 comp = make(compositeTOP, 'pose_comp', X0 + 400, Y0 + 150)
 tryset(comp, ['operand'], 'add')        # add = order independent, works for silhouettes on black; try 'screen' if too bright
-for i, src in enumerate([reveal, net.op(USER_LEVEL), net.op(AVATAR_LEVEL), text]):
-    if src is None:
-        print('!! missing level node, connect pose_comp input', i, 'by hand')
-    else:
-        comp.inputConnectors[0].connect(src)
-if len(comp.inputs) != 4:
-    print('!! pose_comp has', len(comp.inputs), 'inputs - wire reveal, level_shadow, level_shadow1 and pose_text into it by hand')
+wire(comp, [reveal, net.op(USER_LEVEL), net.op(AVATAR_LEVEL), text])
 out = make(nullTOP, 'pose_out', X0 + 600, Y0 + 150)
 out.inputConnectors[0].connect(comp)
 if CONNECT_OUT and net.op('out1') is not None:
@@ -284,16 +294,14 @@ for name, key in ((AVATAR_LEVEL, 'avatar_alpha'), (USER_LEVEL, 'user_alpha')):
 
 # 5. sound: one loop per element, volume follows how awake the zone is
 mix = make(mathCHOP, 'snd_mix', X0 + 200, Y0 - 400)
-tryset(mix, ['chanop'], 'add')
+tryset(mix, ['chopop'], 'add')          # add the four CHOPs together, keep left/right
 for n, el in enumerate(('water', 'earth', 'air', 'fire')):
     s = make(audiofileinCHOP, 'snd_' + el, X0, Y0 - 250 - n * 100)
     tryset(s, ['file'], project.folder + '/' + SOUND_DIR + '/' + el + '.wav')
     tryset(s, ['play'], True)
     tryset(s, ['repeat'], 'on')
     tryset(s, ['volume'], fetch('p_' + el), expr=True)
-    mix.inputConnectors[0].connect(s)       # Math CHOP accepts several inputs; each connect() adds one
-if len(mix.inputs) != 4:
-    print('!! snd_mix has', len(mix.inputs), 'inputs - wire the four snd_* CHOPs into it by hand')
+wire(mix, [net.op('snd_' + el) for el in ('water', 'earth', 'air', 'fire')])
 snd_out = make(audiodeviceoutCHOP, 'snd_out', X0 + 400, Y0 - 400)
 snd_out.inputConnectors[0].connect(mix)
 
